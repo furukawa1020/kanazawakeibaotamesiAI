@@ -1,0 +1,133 @@
+# Kanazawa 3T Configuration
+
+# Data settings
+data:
+  required_columns:
+    - race_id
+    - date
+    - distance
+    - surface
+    - track_condition
+    - class
+    - horse_no
+    - gate
+    - sex
+    - age
+    - weight_carried
+    - jockey_id
+    - trainer_id
+    - finish_position
+  
+  # Feature engineering
+  features:
+    n_past_races: 3  # Number of past races to use for rolling features
+    min_races_for_stats: 2  # Minimum races needed for aggregated stats
+    
+# Model settings
+model:
+  type: lightgbm
+  objective: lambdarank
+  metric: ndcg
+  
+  # LightGBM hyperparameters
+  params:
+    num_leaves: 31
+    learning_rate: 0.05
+    n_estimators: 500
+    max_depth: -1
+    min_child_samples: 20
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_alpha: 0.1
+    reg_lambda: 0.1
+    random_state: 42
+    device: gpu
+    gpu_platform_id: 0
+    gpu_device_id: 0
+  
+  # Early stopping
+  early_stopping_rounds: 50
+  
+  # Calibration
+  calibration:
+    method: isotonic  # isotonic or platt
+    cv_folds: 3
+
+# Inference settings
+inference:
+  # Probability estimation
+  probability:
+    method: monte_carlo  # monte_carlo or analytical
+    n_samples: 50000
+    use_gpu: true
+    random_seed: 42
+  
+  # Score to weight conversion
+  score_to_weight: exp  # exp or softmax
+
+# Betting strategy
+betting:
+  # Candidate generation
+  top_k_horses: 7  # Number of top horses to consider
+  generation_method: sampling  # sampling or enumerate
+  
+  # Filtering
+  filter:
+    min_ev: 1.15  # Minimum expected value
+    min_probability: 0.002  # Minimum probability threshold
+    max_bets: 30  # Maximum number of bets per race
+  
+  # Stake allocation
+  allocation:
+    budget: 3000  # Budget per race (yen)
+    stake_unit: 100  # Minimum stake unit (yen)
+    min_stake: 100  # Minimum stake per bet (yen)
+    probability_exponent: 0.7  # Exponent for probability weighting (q = p^α)
+
+# Evaluation settings
+evaluation:
+  # Metrics
+  metrics:
+    - brier_score
+    - calibration
+    - ndcg
+    - roi
+    - expected_value
+    - max_drawdown
+    - coverage
+  
+  # Calibration curve
+  calibration_bins: 10
+  
+  # Backtesting
+  backtest:
+    min_races_per_period: 10
+    report_format: json  # json or csv
+
+# Time-series cross-validation
+cv:
+  method: time_series  # time_series only
+  n_splits: 5
+  test_size: 0.2
+
+# Baseline strategies
+baselines:
+  - popularity  # Based on betting odds
+  - last_race  # Based on previous finish position
+  - jockey  # Based on jockey win rate
+
+# Paths
+paths:
+  data_dir: data
+  model_dir: models
+  output_dir: output
+  mlflow_uri: file:./mlruns
+
+# Logging
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: logs/keibaai.log
+
+# Random seed for reproducibility
+random_seed: 42

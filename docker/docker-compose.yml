@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  keibaai:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: keibaai
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - ../data:/app/data
+      - ../models:/app/models
+      - ../output:/app/output
+      - ../logs:/app/logs
+      - ../mlruns:/app/mlruns
+      - ../configs:/app/configs
+      - ../src:/app/src
+    working_dir: /app
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: /bin/bash
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.9.2
+    container_name: mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      - ../mlruns:/mlflow/mlruns
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri file:///mlflow/mlruns --default-artifact-root file:///mlflow/mlruns
