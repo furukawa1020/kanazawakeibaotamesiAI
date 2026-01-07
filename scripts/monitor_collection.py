@@ -1,53 +1,83 @@
 """
-Monitor the data collection progress.
+Monitor data collection progress and report.
 """
 import time
 import os
 from pathlib import Path
 import pandas as pd
+from datetime import datetime
 
 def monitor_progress():
-    """Monitor and display collection progress."""
-    data_dir = Path('data')
-    progress_dir = data_dir / 'collection_progress'
+    """Monitor and report collection progress."""
+    print("="*70)
+    print("KANAZAWA DATA COLLECTION MONITOR")
+    print("="*70)
+    print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print()
     
-    print("="*70)
-    print("金沢競馬データ収集 - 進捗モニター")
-    print("="*70)
-    print("\n収集中のファイル:")
+    data_dir = Path('data')
+    log_file = Path('data_collection.log')
+    
+    iteration = 0
+    last_size = 0
     
     while True:
-        # Check for collected files
-        if data_dir.exists():
-            csv_files = list(data_dir.glob('*.csv'))
-            if csv_files:
-                print(f"\n✓ 完成ファイル ({len(csv_files)}):")
-                for f in sorted(csv_files):
-                    size = f.stat().st_size / 1024  # KB
-                    print(f"  - {f.name}: {size:.1f} KB")
-                    
-                    # Show record count
-                    try:
-                        df = pd.read_csv(f)
-                        print(f"      レコード数: {len(df)}, レース数: {df['race_id'].nunique()}")
-                    except:
-                        pass
+        iteration += 1
+        print(f"\n[Check #{iteration}] {datetime.now().strftime('%H:%M:%S')}")
+        print("-" * 70)
         
-        # Check progress files
-        if progress_dir.exists():
-            progress_files = list(progress_dir.glob('*.csv'))
-            if progress_files:
-                print(f"\n🔄 進行中 ({len(progress_files)} 月分):")
-                for f in sorted(progress_files)[-5:]:  # Show last 5
-                    print(f"  - {f.name}")
+        # Check collected files
+        csv_files = list(data_dir.glob('kanazawa_*.csv'))
         
-        print(f"\n最終更新: {time.strftime('%H:%M:%S')}")
-        print("Ctrl+C で終了")
+        if csv_files:
+            print(f"\nCollected files: {len(csv_files)}")
+            total_records = 0
+            
+            for f in sorted(csv_files):
+                try:
+                    df = pd.read_csv(f)
+                    records = len(df)
+                    total_records += records
+                    races = df['race_id'].nunique() if 'race_id' in df.columns else 0
+                    print(f"  {f.name}: {records} records, {races} races")
+                except:
+                    print(f"  {f.name}: {os.path.getsize(f)} bytes")
+            
+            print(f"\nTotal records so far: {total_records}")
+            
+            if total_records > last_size:
+                print(f"New data collected: +{total_records - last_size} records")
+                last_size = total_records
+        else:
+            print("No data files yet...")
         
-        time.sleep(30)  # Update every 30 seconds
+        # Check log file
+        if log_file.exists():
+            log_size = os.path.getsize(log_file)
+            print(f"\nLog file size: {log_size:,} bytes")
+            
+            # Show last few lines
+            try:
+                with open(log_file, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                    if lines:
+                        print("\nLast log entries:")
+                        for line in lines[-5:]:
+                            print(f"  {line.rstrip()}")
+            except:
+                pass
+        
+        print("\nWaiting 2 minutes before next check...")
+        print("(Press Ctrl+C to stop monitoring)")
+        
+        try:
+            time.sleep(120)  # Check every 2 minutes
+        except KeyboardInterrupt:
+            print("\n\nMonitoring stopped by user.")
+            break
 
 if __name__ == '__main__':
     try:
         monitor_progress()
-    except KeyboardInterrupt:
-        print("\n\nモニター終了")
+    except Exception as e:
+        print(f"Error: {e}")
