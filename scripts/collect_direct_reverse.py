@@ -1,6 +1,7 @@
 """
 Direct approach to collect Kanazawa race data.
 Updated with correct Kanazawa track code (46) and active season logic.
+OPTIMIZED: Collects in REVERSE order (2024 -> 2020) to get data faster.
 """
 import requests
 from bs4 import BeautifulSoup
@@ -193,39 +194,35 @@ def scrape_race(race_id):
 
 def collect_kanazawa_data(start_year=2020, end_year=2024):
     """Collect Kanazawa data systematically."""
-    logger.info(f"Starting collection: {start_year}-{end_year}")
-    logger.info("Target: Kanazawa (Code 46), Apr-Dec (Winter Break skipped)")
+    logger.info(f"Starting collection: {end_year} -> {start_year} (Reverse Order)")
     
     all_data = []
-    races_count = 0
-    total_found = 0
     
-    # Kanazawa active season: Usually April to December
-    # Sometimes starts mid-March or runs into Jan in some years, but mainly Apr-Dec
+    # Kanazawa active season
     active_months = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     
-    for year in range(start_year, end_year + 1):
+    # Active weekdays: Sun(6), Mon(0), Tue(1) + Try Sun-Tue range
+    active_days = [0, 1, 2, 6] # Sun, Mon, Tue, Wed just in case
+    
+    # REVERSE ORDER LOOP
+    for year in range(end_year, start_year - 1, -1):
         logger.info(f"\n{'='*60}")
         logger.info(f"YEAR: {year}")
         logger.info(f"{'='*60}")
         
         year_data = []
+        races_count = 0
         
         start_date = datetime(year, 1, 1)
         end_date = datetime(year, 12, 31)
-        current_date = start_date
         
-        while current_date <= end_date:
-            # Check Kanazawa season + Weekends/Tu/Tue (Kanazawa often runs Sun/Mon/Tue)
-            # Checking ALL days in season is safer but slower. 
-            # Let's check Sun(6), Mon(0), Tue(1) which are common for Kanazawa
-            if current_date.month in active_months and current_date.weekday() in [0, 1, 6]:
+        # Iterate dates backwards too, to get most recent first
+        current_date = end_date
+        
+        while current_date >= start_date:
+            if current_date.month in active_months and current_date.weekday() in active_days:
                 
                 date_str = current_date.strftime('%m%d')
-                
-                # Check race 1 to see if day has racing
-                # Format: YYYY(4) + 46(2) + MMDD(4) + RR(2)
-                # Try Race 1 first
                 check_id = f"{year}46{date_str}01"
                 
                 logger.info(f"Checking {current_date.strftime('%Y-%m-%d')}...")
@@ -237,7 +234,6 @@ def collect_kanazawa_data(start_year=2020, end_year=2024):
                     year_data.extend(data)
                     races_count += 1
                     
-                    # Scrape rest of the day
                     for race_num in range(2, 13):
                         race_id = f"{year}46{date_str}{race_num:02d}"
                         r_data = scrape_race(race_id)
@@ -247,17 +243,21 @@ def collect_kanazawa_data(start_year=2020, end_year=2024):
                             races_count += 1
                             print(".", end="", flush=True)
                         else:
-                            break # No more races this day
-                    print() # Newline
+                            break 
+                    print()
+                    
+                    # Save incremental progress (every race day)
+                    if races_count % 5 == 0:
+                         output_file = Path(f'data/kanazawa_{year}_partial.csv')
+                         pd.DataFrame(year_data).to_csv(output_file, index=False, encoding='utf-8-sig')
+                         
                 else:
-                    # No race 1, probably no racing this day
-                    logger.info("  No races.")
+                    pass
             
             else:
-                # Out of season or unlikely day
                 pass
                 
-            current_date += timedelta(days=1)
+            current_date -= timedelta(days=1)
             
         # Save yearly file
         if year_data:
@@ -274,23 +274,14 @@ def collect_kanazawa_data(start_year=2020, end_year=2024):
         final_df = pd.DataFrame(all_data)
         output_file = Path(f'data/kanazawa_{start_year}_{end_year}.csv')
         final_df.to_csv(output_file, index=False, encoding='utf-8-sig')
-        
-        logger.info(f"\n{'='*60}")
-        logger.info(f"COMPLETE!")
-        logger.info(f"Total races: {races_count}")
-        logger.info(f"Total records: {len(final_df)}")
-        logger.info(f"File: {output_file}")
-        logger.info(f"{'='*60}")
-        
         return final_df
     else:
-        logger.error("No data collected")
         return pd.DataFrame()
 
 
 if __name__ == '__main__':
-    logger.info("Kanazawa Data Collection - Corrected Code 46")
-    logger.info("This will take a while. Monitoring active...")
+    logger.info("Kanazawa Data Collection - REVERSE MODE")
+    logger.info("Starting from Dec 2024 backwards...")
     
     # Collect 2020-2024
     df = collect_kanazawa_data(2020, 2024)
