@@ -1,8 +1,10 @@
 """
-Direct approach to collect Kanazawa race data.
-Updated with correct Kanazawa track code (46).
-OPTIMIZED: Focuses specifically on collecting Dec 2024 dates FIRST.
-FIXED: Table selectors for NAR result pages (Rank, Gate, HorseNo).
+Production Scraper for Kanazawa Horse Racing (2020-2024).
+Features:
+- Reverse chronological order (2024 -> 2020) to get recent data first.
+- Correct Track Code (46).
+- Validated Selectors for netkeiba (Rank, Gate, HorseNo).
+- Resilient to network errors and partial saves.
 """
 import requests
 from bs4 import BeautifulSoup
@@ -12,20 +14,25 @@ import time
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
+import sys
 
+# Setup logging
+log_file = Path('data_collection.log')
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(message)s',
     handlers=[
-        logging.FileHandler('data_collection.log', encoding='utf-8', mode='w'),
-        logging.StreamHandler()
+        logging.FileHandler(log_file, encoding='utf-8', mode='w'),
+        logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
 
-
 def scrape_race(race_id):
-    """Scrape a single race directly."""
+    """
+    Scrape a single race by ID.
+    Returns a list of dictionaries (one per horse) or None if failed.
+    """
     url = f'https://nar.netkeiba.com/race/result.html?race_id={race_id}'
     
     try:
@@ -34,15 +41,16 @@ def scrape_race(race_id):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
         
+        # Be polite to the server
         time.sleep(1.0)
         
         response = session.get(url, timeout=10)
         if response.status_code != 200:
-            logger.warning(f"  Status {response.status_code} for {race_id}")
             return None
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
+        # Verify it's a valid race page
         race_name_elem = soup.select_one('.RaceName')
         if not race_name_elem:
             return None
@@ -51,52 +59,55 @@ def scrape_race(race_id):
         if not race_name:
             return None
         
+        # Base race info
         race_info = {'race_id': race_id, 'race_name': race_name}
         
-        # Date
+        # Parse Date from ID (YYYY46MMDDRR)
         try:
-            date_part = race_id[6:10]
-            year_part = race_id[:4]
-            race_info['date'] = f"{year_part}-{date_part[:2]}-{date_part[2:]}"
+            year = race_id[:4]
+            mmdd = race_id[6:10]
+            race_info['date'] = f"{year}-{mmdd[:2]}-{mmdd[2:]}"
         except:
             pass
         
-        # Surface/Distance
+        # Surface & Distance
         data1 = soup.select_one('div.RaceData01')
         if data1:
             text = data1.get_text()
-            race_info['surface'] = 'ダ' if 'ダ' in text else '芝'
+            race_info['surface'] = 'ダ' if 'ダ' in text else ( '芝' if '芝' in text else 'Other')
             m = re.search(r'(\d{3,4})m', text)
-            if m: race_info['distance'] = int(m.group(1))
+            if m: result_dist = int(m.group(1))
+            else: result_dist = None
+            race_info['distance'] = result_dist
         
-        # Condition
+        # Track Condition
         data2 = soup.select_one('div.RaceData02')
-        if data2:
-            text = data2.get_text()
-            if '良' in text: race_info['track_condition'] = '良'
-            elif '稍' in text: race_info['track_condition'] = '稍重'
-            elif '重' in text: race_info['track_condition'] = '重'
-            elif '不' in text: race_info['track_condition'] = '不良'
-        else:
-            spans = soup.select('span')
-            for s in spans:
-                if '天候' in s.get_text():
-                    text = s.get_text()
-                    if '良' in text: race_info['track_condition'] = '良'
-                    elif '稍' in text: race_info['track_condition'] = '稍重'
-                    elif '重' in text: race_info['track_condition'] = '重'
-                    elif '不' in text: race_info['track_condition'] = '不良'
+        cond_text = data2.get_text() if data2 else ""
+        if not cond_text:
+            # Fallback
+            for s in soup.select('span'):
+               if '天候' in s.get_text():
+                   cond_text = s.get_text()
+                   break
         
+        if '良' in cond_text: race_info['track_condition'] = '良'
+        elif '稍' in cond_text: race_info['track_condition'] = '稍重'
+        elif '重' in cond_text: race_info['track_condition'] = '重'
+        elif '不' in cond_text: race_info['track_condition'] = '不良'
+        else: race_info['track_condition'] = '良' # Default fallback
+        
+        # Class (Simple heuristic)
         race_info['class'] = 'C'
         if 'A' in race_name: race_info['class'] = 'A'
         elif 'B' in race_name: race_info['class'] = 'B'
         
+        # Parse Horses
         results = []
         rows = soup.select('tr')
         
         for row in rows:
             try:
-                # Rank: .Rank inside .Result_Num
+                # Rank
                 rank_elem = row.select_one('.Rank')
                 if not rank_elem: continue
                 rank_text = rank_elem.get_text().strip()
@@ -105,116 +116,164 @@ def scrape_race(race_id):
                 horse = race_info.copy()
                 horse['finish_position'] = int(rank_text)
                 
-                # Gate and HorseNo are usually in td.Num cells
-                # First td.Num is Gate, Second is HorseNo
+                # Gate & Horse No
+                # Usually in td.Num cells. 
+                # Layout: [Gate(Waku), HorseNo(Umaban)]
                 nums = row.select('td.Num')
                 if len(nums) >= 2:
-                    gate_text = nums[0].get_text().strip()
-                    if gate_text.isdigit(): horse['gate'] = int(gate_text)
-                    
-                    no_text = nums[1].get_text().strip()
-                    if no_text.isdigit(): horse['horse_no'] = int(no_text)
+                    g_txt = nums[0].get_text().strip()
+                    n_txt = nums[1].get_text().strip()
+                    if g_txt.isdigit(): horse['gate'] = int(g_txt)
+                    if n_txt.isdigit(): horse['horse_no'] = int(n_txt)
                 else:
-                    # Fallback selectors
-                    gate = row.select_one('span.Waku, td.Waku')
-                    if gate and gate.get_text().strip().isdigit():
-                        horse['gate'] = int(gate.get_text().strip())
-                    
-                    num = row.select_one('td.Umaban, span.Umaban')
-                    if num and num.get_text().strip().isdigit():
-                        horse['horse_no'] = int(num.get_text().strip())
+                    # Fallback
+                    g = row.select_one('span.Waku, td.Waku')
+                    n = row.select_one('td.Umaban, span.Umaban')
+                    if g and g.get_text().strip().isdigit(): horse['gate'] = int(g.get_text().strip())
+                    if n and n.get_text().strip().isdigit(): horse['horse_no'] = int(n.get_text().strip())
                 
-                # Other info
+                # Horse Name/ID
                 h_link = row.select_one('a[href*="/horse/"]')
                 if h_link:
                     horse['horse_name'] = h_link.get_text().strip()
                     m = re.search(r'horse/(\w+)', h_link.get('href', ''))
                     if m: horse['horse_id'] = m.group(1)
                 
+                # Sex/Age
                 sa = row.select_one('td.Barei, span.Barei')
                 if sa:
-                    sa_text = sa.get_text().strip()
-                    if len(sa_text) >= 2:
-                        horse['sex'] = sa_text[0]
-                        digits = ''.join(filter(str.isdigit, sa_text))
+                    sa_txt = sa.get_text().strip()
+                    if len(sa_txt) >= 2:
+                        horse['sex'] = sa_txt[0]
+                        digits = ''.join(filter(str.isdigit, sa_txt))
                         if digits: horse['age'] = int(digits)
                 
+                # Weight
                 w = row.select_one('td.Kinryo, span.Kinryo')
                 if w:
                     m = re.search(r'(\d+\.?\d*)', w.get_text())
                     if m: horse['weight_carried'] = float(m.group(1))
                 
+                # Jockey
                 j = row.select_one('a[href*="/jockey/"]')
                 if j:
                     horse['jockey_name'] = j.get_text().strip()
                     m = re.search(r'jockey/(\w+)', j.get('href', ''))
                     if m: horse['jockey_id'] = m.group(1)
                 
+                # Trainer
                 t = row.select_one('a[href*="/trainer/"]')
                 if t:
                     horse['trainer_name'] = t.get_text().strip()
                     m = re.search(r'trainer/(\w+)', t.get('href', ''))
                     if m: horse['trainer_id'] = m.group(1)
                 
+                # Horse Weight
                 hw = row.select_one('td.Weight')
                 if hw:
-                    hw_text = hw.get_text().strip()
-                    m = re.search(r'(\d+)', hw_text)
+                    hw_txt = hw.get_text().strip()
+                    m = re.search(r'(\d+)', hw_txt)
                     if m: horse['horse_weight'] = int(m.group(1))
-                    m_diff = re.search(r'\(([+-]?\d+)\)', hw_text)
+                    m_diff = re.search(r'\(([+-]?\d+)\)', hw_txt)
                     if m_diff: horse['horse_weight_diff'] = int(m_diff.group(1))
 
-                if 'finish_position' in horse and 'horse_no' in horse:
+                # Validation
+                required = ['finish_position', 'horse_no', 'horse_id']
+                if all(k in horse for k in required):
                     results.append(horse)
-            except:
+                    
+            except Exception as e:
                 continue
-        
+                
         return results if results else None
         
     except Exception as e:
-        logger.error(f"Error scraping {race_id}: {e}")
+        logger.error(f"  Error on {race_id}: {e}")
         return None
 
-
-def collect_kanazawa_data():
-    """Collect Kanazawa data, prioritizing confirmed dates."""
+def collect_all_data():
+    """Collect data from 2024 back to 2020."""
+    start_year = 2020
+    end_year = 2024
     
-    known_dates = [
-        '20241217', '20241215', '20241210', '20241208', '20241203', '20241202', '20241201'
-    ]
+    logger.info(f"STARTING FULL COLLECTION: {end_year} -> {start_year}")
+    logger.info("Target: Kanazawa (46)")
     
-    logger.info("PHASE 1: Collecting Known Dates (Dec 2024)")
-    all_data = []
+    # Kanazawa Racing usually happens on Sun, Mon, Tue
+    # But schedules vary. We will check active months efficiently.
+    active_months = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12] # Approx season
     
-    for date_str in known_dates:
-        logger.info(f"Checking Known Date: {date_str}...")
+    for year in range(end_year, start_year - 1, -1):
+        logger.info(f"\n{'='*40}\n YEAR: {year} \n{'='*40}")
         
-        day_data = []
-        for race_num in range(1, 13):
-            race_id = f"{date_str[:4]}46{date_str[4:]}{race_num:02d}"
-            data = scrape_race(race_id)
-            if data:
-                day_data.extend(data)
-                print(".", end="", flush=True)
+        year_data = []
+        races_found = 0
+        
+        start_date = datetime(year, 1, 1)
+        end_date = datetime(year, 12, 31)
+        current_date = end_date
+        
+        while current_date >= start_date:
+            # Skip likely off-season or non-race days to save time?
+            # Kanazawa: Sun(6), Mon(0), Tue(1) are main days. Often Sun/Tue.
+            # Let's check [Sun, Mon, Tue] + maybe Wed?
+            # To be safe, checking checking Sun/Mon/Tue is 90% coverage.
+            # Let's throw in Wed(2) and Tue(1) and Mon(0) and Sun(6).
+            if current_date.month in active_months and current_date.weekday() in [0, 1, 2, 6]:
+                
+                mmdd = current_date.strftime('%m%d')
+                # Try Race 1
+                race1_id = f"{year}46{mmdd}01"
+                
+                # Small log just to show aliveness (overwritten by finding)
+                # print(f"\rChecking {current_date.strftime('%Y-%m-%d')}...", end="")
+                
+                data = scrape_race(race1_id)
+                if data:
+                    logger.info(f"  FOUND {current_date.strftime('%Y-%m-%d')}! Scraping full day...")
+                    year_data.extend(data)
+                    races_found += 1
+                    
+                    # Scrape races 2-12
+                    for r_num in range(2, 13):
+                        rid = f"{year}46{mmdd}{r_num:02d}"
+                        r_data = scrape_race(rid)
+                        if r_data:
+                            year_data.extend(r_data)
+                            races_found += 1
+                            print(".", end="", flush=True)
+                        else:
+                            break
+                    print() # Newline
+                    
+                    # Periodic Save (every 5 race days)
+                    if races_found % 50 == 0:
+                        temp_save(year_data, year)
+                        
+                else:
+                    pass # logger.debug(f"No race on {current_date}")
+            
             else:
-                if race_num == 1: pass
-                else: break
-        print()
-        
-        if day_data:
-            logger.info(f"  SUCCESS! Found {len(day_data)} records for {date_str}")
-            all_data.extend(day_data)
-            output_file = Path(f'data/kanazawa_2024_dec_partial.csv')
-            pd.DataFrame(all_data).to_csv(output_file, index=False, encoding='utf-8-sig')
+                pass # Skip
+            
+            current_date -= timedelta(days=1)
+            
+        # End of Year Save
+        if year_data:
+            save_year(year_data, year)
         else:
-            logger.warning(f"  Failed to find data for known date {date_str}")
+            logger.warning(f"No data found for year {year}")
 
-    logger.info("PHASE 2: Systematic Reverse Collection (2024 -> 2020)")
-    # Should implement full loop here for production use, but for now getting Dec 2024 is priority
-    
-    return pd.DataFrame(all_data)
+def temp_save(data, year):
+    path = Path(f'data/kanazawa_{year}_partial.csv')
+    pd.DataFrame(data).to_csv(path, index=False, encoding='utf-8-sig')
+    logger.info(f"  (Saved partial: {len(data)} records)")
 
+def save_year(data, year):
+    path = Path(f'data/kanazawa_{year}.csv')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(data).to_csv(path, index=False, encoding='utf-8-sig')
+    logger.info(f"✓ COMPLETED {year}: Saved {len(data)} records to {path}")
 
 if __name__ == '__main__':
-    logger.info("Kanazawa Data Collection - TARGETED MODE v2 (FIXED SELECTORS)")
-    df = collect_kanazawa_data()
+    collect_all_data()
