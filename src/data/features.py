@@ -159,6 +159,15 @@ class FeatureEngineer:
         """
         # For each race, calculate jockey/trainer stats from past data only
         df = df.sort_values(['date', 'race_id']).reset_index(drop=True)
+
+        # Horse win rate (rolling, leak-free) -> Added this!
+        if 'horse_id' in df.columns:
+            df['horse_win_rate'] = self._calculate_rolling_win_rate(
+                df, 'horse_id', min_races=self.min_races_for_stats
+            )
+            df['horse_top3_rate'] = self._calculate_rolling_top_n_rate(
+                df, 'horse_id', n=3, min_races=self.min_races_for_stats
+            )
         
         # Jockey win rate (rolling, leak-free)
         if 'jockey_id_encoded' in df.columns:
@@ -214,25 +223,37 @@ class FeatureEngineer:
         min_races: int = 2
     ) -> pd.Series:
         """
-        Calculate rolling win rate (leak-free).
-        For each row, only use data from BEFORE that date.
+        Calculate rolling win rate (leak-free) using vectorized operations.
         """
-        win_rates = []
+        # Create a binary win column
+        df['is_win'] = (df['finish_position'] == 1).astype(int)
         
-        for idx, row in df.iterrows():
-            current_date = row['date']
-            group_value = row[group_col]
-            
-            # Get all past races for this group (before current date)
-            past_data = df[(df[group_col] == group_value) & (df['date'] < current_date)]
-            
-            if len(past_data) < min_races:
-                win_rates.append(-1)  # Not enough data
-            else:
-                win_rate = (past_data['finish_position'] == 1).mean()
-                win_rates.append(win_rate)
+        # Group by the target column (jockey/trainer) and calculate expanding mean
+        # We shift by 1 to ensure we only use PAST data (leak-free)
+        # We need a custom rolling calculation because simple rolling doesn't handle the "all past history" requirement efficiently with groups sometimes
+        # Actually, expanding().mean() works perfectly for "all past history"
         
-        return pd.Series(win_rates, index=df.index)
+        # Calculate stats per group
+        grouped = df.groupby(group_col)['is_win']
+        
+        # Count past races (expanding count) - shifted
+        counts = grouped.expanding().count().groupby(group_col).shift(1).fillna(0)
+        
+        # Sum past wins (expanding sum) - shifted
+        wins = grouped.expanding().sum().groupby(group_col).shift(1).fillna(0)
+        
+        # Calculate rate, handling division by zero/min_races
+        win_rates = wins / counts
+        
+        # Mask where counts < min_races
+        win_rates[counts < min_races] = -1
+        
+        # Clean up temporary column
+        df.drop('is_win', axis=1, inplace=True)
+        
+        # The index matches original df because groupby preserves it if not as_index=False logic isn't interfering
+        # But to be safe, we align by index
+        return win_rates.reset_index(level=0, drop=True)
     
     def _calculate_rolling_top_n_rate(
         self,
@@ -241,23 +262,19 @@ class FeatureEngineer:
         n: int = 3,
         min_races: int = 2
     ) -> pd.Series:
-        """Calculate rolling top-N rate (leak-free)."""
-        top_n_rates = []
+        """Calculate rolling top-N rate (leak-free) vectorized."""
+        # Create binary top-n column
+        df['is_top_n'] = (df['finish_position'] <= n).astype(int)
         
-        for idx, row in df.iterrows():
-            current_date = row['date']
-            group_value = row[group_col]
-            
-            # Get all past races for this group (before current date)
-            past_data = df[(df[group_col] == group_value) & (df['date'] < current_date)]
-            
-            if len(past_data) < min_races:
-                top_n_rates.append(-1)
-            else:
-                top_n_rate = (past_data['finish_position'] <= n).mean()
-                top_n_rates.append(top_n_rate)
+        grouped = df.groupby(group_col)['is_top_n']
+        counts = grouped.expanding().count().groupby(group_col).shift(1).fillna(0)
+        top_n_sum = grouped.expanding().sum().groupby(group_col).shift(1).fillna(0)
         
-        return pd.Series(top_n_rates, index=df.index)
+        rates = top_n_sum / counts
+        rates[counts < min_races] = -1
+        
+        df.drop('is_top_n', axis=1, inplace=True)
+        return rates.reset_index(level=0, drop=True)
     
     def _calculate_rolling_condition_stat(
         self,
@@ -268,36 +285,29 @@ class FeatureEngineer:
         agg: str = 'mean'
     ) -> pd.Series:
         """
-        Calculate rolling statistics under same condition (leak-free).
+        Calculate rolling statistics under same condition (leak-free) vectorized.
+        This is trickier because we need to group by (group_col, condition_col).
         """
-        stats = []
+        # Create a composite key for grouping
+        # But actually groupby accepts multiple columns
         
-        for idx, row in df.iterrows():
-            current_date = row['date']
-            group_value = row[group_col]
-            condition_value = row[condition_col]
-            
-            # Get past races with same condition
-            past_data = df[
-                (df[group_col] == group_value) &
-                (df[condition_col] == condition_value) &
-                (df['date'] < current_date)
-            ]
-            
-            if len(past_data) < self.min_races_for_stats:
-                stats.append(-1)
-            else:
-                if agg == 'mean':
-                    stat_value = past_data[stat_col].mean()
-                elif agg == 'min':
-                    stat_value = past_data[stat_col].min()
-                elif agg == 'max':
-                    stat_value = past_data[stat_col].max()
-                else:
-                    stat_value = -1
-                stats.append(stat_value)
+        grouped = df.groupby([group_col, condition_col])[stat_col]
         
-        return pd.Series(stats, index=df.index)
+        if agg == 'mean':
+            shifted_stat = grouped.expanding().mean().groupby([group_col, condition_col]).shift(1)
+        elif agg == 'min':
+            shifted_stat = grouped.expanding().min().groupby([group_col, condition_col]).shift(1)
+        elif agg == 'max':
+            shifted_stat = grouped.expanding().max().groupby([group_col, condition_col]).shift(1)
+        else:
+            return pd.Series(-1, index=df.index)
+            
+        counts = grouped.expanding().count().groupby([group_col, condition_col]).shift(1).fillna(0)
+        
+        result = shifted_stat.fillna(-1)
+        result[counts < self.min_races_for_stats] = -1
+        
+        return result.reset_index(level=[0, 1], drop=True)
     
     def get_feature_columns(self, df: pd.DataFrame) -> List[str]:
         """

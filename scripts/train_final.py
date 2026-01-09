@@ -95,14 +95,14 @@ def train_model():
     model = lgb.LGBMRanker(
         objective="lambdarank",
         metric="ndcg",
-        n_estimators=1000,
-        learning_rate=0.05,
-        num_leaves=31,
+        n_estimators=5000,      # Increased from 1000
+        learning_rate=0.01,     # Decreased from 0.05 for higher precision
+        num_leaves=63,          # Increased from 31 for more complexity
+        min_child_samples=10,   # Allow capturing finer patterns
         # GPU Parameters - FIXED for RTX 5060
         device="gpu", 
-        gpu_platform_id=1, # 1 = NVIDIA RTX 5060, 0 = Intel
-        gpu_device_id=0,
-        max_position=18
+        gpu_platform_id=1, 
+        gpu_device_id=0
     )
     
     try:
