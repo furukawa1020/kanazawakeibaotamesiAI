@@ -170,8 +170,8 @@ def collect_recent():
         year_data = []
         races_found = 0
         
-        # Reverse order: Dec 31 -> Dec 1 (Just December for quick validation)
-        start_date = datetime(year, 12, 1)
+        # Reverse order: Dec 31 -> Jan 1 (Full year for complete history)
+        start_date = datetime(year, 1, 1)
         end_date = datetime(year, 12, 31)
         current_date = end_date
         
