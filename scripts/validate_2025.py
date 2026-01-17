@@ -66,13 +66,20 @@ def validate_2025():
     logger.info("Loading trained model...")
     model = lgb.Booster(model_file='models/kanazawa_ranker_v1.txt')
     
-    # Select features
-    feature_cols = fe.get_feature_columns(target_df)
-    # Ensure columns match model requirement (might need strict check, but usually OK by name)
-    # We use the same feature engineer so names should match.
+    # Select specific features matching training logic
+    # Logic from train_final.py lines 75-76
+    import numpy as np
     
-    # Filter features to numeric only to be safe/consistent with training
-    X_target = target_df[feature_cols].select_dtypes(include=['number'])
+    # We must apply this to the WHOLE dataframe or ensures target_df has these columns
+    # target_df is derived from df which went through FE, so it has them.
+    
+    numeric_cols = target_df.select_dtypes(include=[np.number]).columns
+    feature_cols = [c for c in numeric_cols 
+                   if c not in ['finish_position', 'race_id_encoded'] and 
+                   ('win_rate' in c or 'encoded' in c or 'weight' in c or 'age' in c or 
+                    'distance' in c or 'gate' in c)]
+    
+    X_target = target_df[feature_cols]
     
     # Predict
     logger.info("Predicting...")
@@ -117,6 +124,18 @@ def validate_2025():
     logger.info("\nRecent 5 Predictions:")
     res_df = pd.DataFrame(results).sort_values('date', ascending=False)
     print(res_df.head(5).to_markdown(index=False))
+    
+    # Save Report
+    report_path = Path('validation_report_dec2025.md')
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write(f"# Model Validation Report (Dec 2025)\n\n")
+        f.write(f"## Summary\n")
+        f.write(f"- **Top-1 Accuracy**: {accuracy:.2%} ({correct}/{total} races)\n")
+        f.write(f"- **Total Races Evaluated**: {total}\n\n")
+        f.write(f"## Detailed Results (Last 50 races)\n")
+        f.write(res_df.head(50).to_markdown(index=False))
+    
+    logger.info(f"\n[REPORT SAVED] Full report available at: {report_path.absolute()}")
 
 if __name__ == '__main__':
     validate_2025()
